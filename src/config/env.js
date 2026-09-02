@@ -43,6 +43,9 @@ const envSchema = z.object({
   GEMINI_API_KEYS: z
     .string()
     .optional(),
+  GEMINI_MODEL: z
+    .string()
+    .default("gemini-3.6-flash"),
 
   // Google OAuth2 Configuration (Sheets & Drive Integration)
   GOOGLE_CLIENT_ID: z

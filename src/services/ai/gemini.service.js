@@ -12,7 +12,7 @@ export class GeminiService {
     this.rawKeysInput = apiKeysInput;
     this.clients = new Map();
     this.currentIndex = 0;
-    this.modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+    this.modelName = process.env.GEMINI_MODEL || env.GEMINI_MODEL || "gemini-3.6-flash";
   }
 
   /**
