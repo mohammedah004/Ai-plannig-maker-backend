@@ -128,15 +128,16 @@ export class GeminiService {
   }
 
   /**
-   * Generates structured JSON output with automatic retries, exponential backoff,
-   * and API key rotation across requests and upon quota/rate limit errors.
+   * Generates structured JSON output with automatic retries, exponential backoff with jitter,
+   * and API key rotation across requests and upon quota/rate limit/503 errors.
    *
    * @param {Object} params
    * @param {string} params.systemPrompt - System instruction / prompt
    * @param {string} params.userPrompt - User prompt content
    * @param {Object} [params.responseSchema] - Optional JSON schema for Gemini structured output
    * @param {number} [params.temperature=0.7] - Sampling temperature
-   * @param {number} [params.maxRetries=3] - Maximum retry attempts
+   * @param {number} [params.maxRetries] - Optional explicit total retry attempts override
+   * @param {number} [params.maxRetriesPerKey=3] - Maximum retry attempts per configured API key
    * @returns {Promise<any>} Parsed JSON object
    */
   async generateStructuredJSON({
@@ -144,9 +145,13 @@ export class GeminiService {
     userPrompt,
     responseSchema = null,
     temperature = 0.7,
-    maxRetries = 3,
+    maxRetries = null,
+    maxRetriesPerKey = 3,
   }) {
     const keys = this.getApiKeys();
+    const effectiveKeysCount = Math.max(1, keys.length);
+    const totalMaxRetries = maxRetries !== null ? maxRetries : effectiveKeysCount * maxRetriesPerKey;
+
     const config = {
       systemInstruction: systemPrompt,
       temperature,
@@ -154,10 +159,13 @@ export class GeminiService {
       ...(responseSchema ? { responseSchema } : {}),
     };
 
+    // Exponential backoff delays: 4s for attempt 1, 8s for attempt 2, 15s for attempt 3+
+    const BASE_DELAYS = [4000, 8000, 15000];
+
     let attempt = 0;
     let lastError = null;
 
-    while (attempt < maxRetries) {
+    while (attempt < totalMaxRetries) {
       attempt++;
       const currentKey = this.apiKey;
       const client = this.getClient(currentKey) || (this.apiKey ? new GoogleGenAI({ apiKey: this.apiKey }) : null);
@@ -204,19 +212,26 @@ export class GeminiService {
       } catch (err) {
         lastError = err;
         const statusCode = err.status || err.statusCode;
-        const isQuotaOrRateLimit =
+        const is503OrTransient =
+          statusCode === 503 ||
           statusCode === 429 ||
+          err.message?.includes("503") ||
+          err.message?.includes("UNAVAILABLE") ||
+          err.message?.includes("high demand") ||
+          err.message?.includes("overloaded") ||
           err.message?.includes("RESOURCE_EXHAUSTED") ||
           err.message?.includes("quota") ||
-          err.message?.includes("rate limit");
-        const isClientError = statusCode >= 400 && statusCode < 500 && !isQuotaOrRateLimit;
+          err.message?.includes("rate limit") ||
+          err.message?.includes("fetch failed");
+
+        const isClientError = statusCode >= 400 && statusCode < 500 && !is503OrTransient;
 
         // If multiple keys are configured, rotate key on failure so retry uses fresh quota
         if (keys.length > 1) {
           this.rotateKey();
         }
 
-        // Never retry non-quota client misconfiguration errors (400, 401, 403)
+        // Never retry non-transient client misconfiguration errors (400, 401, 403)
         if (isClientError) {
           logger.error({ err: err.message, statusCode }, "[GeminiService] Non-retryable client error");
           throw new AppError(
@@ -227,22 +242,33 @@ export class GeminiService {
           );
         }
 
+        // Calculate exponential backoff with random jitter (0-1000ms)
+        const baseDelay = BASE_DELAYS[Math.min(attempt - 1, BASE_DELAYS.length - 1)];
+        const jitter = Math.floor(Math.random() * 1000);
+        const delayMs = baseDelay + jitter;
+
         logger.warn(
-          { attempt, maxRetries, keyIndex: this.currentIndex, err: err.message },
-          `[GeminiService] Transient or quota error encountered, retrying in ${Math.pow(2, attempt - 1)}s...`
+          {
+            attempt,
+            totalMaxRetries,
+            keyIndex: this.currentIndex,
+            statusCode,
+            err: err.message,
+            delaySeconds: Math.round(delayMs / 1000),
+          },
+          `[GeminiService] 503 / High demand or transient error encountered. Retrying with backoff in ${Math.round(delayMs / 1000)}s...`
         );
 
-        if (attempt < maxRetries) {
-          const delayMs = Math.pow(2, attempt - 1) * 1000;
+        if (attempt < totalMaxRetries) {
           await new Promise((res) => setTimeout(res, delayMs));
         }
       }
     }
 
-    logger.error({ lastError: lastError?.message }, "[GeminiService] All retry attempts exhausted");
+    logger.error({ lastError: lastError?.message, totalMaxRetries }, "[GeminiService] All retry attempts exhausted");
     throw new AppError(
       "AI_SERVICE_ERROR",
-      "تعذر إكمال التوليد بالذكاء الاصطناعي بعد عدة محاولات. يرجى المحاولة لاحقاً.",
+      "تعذر إكمال التوليد بالذكاء الاصطناعي بعد عدة محاولات بسبب ضغط الخدمة. يرجى المحاولة لاحقاً.",
       500,
       lastError
     );

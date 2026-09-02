@@ -91,43 +91,66 @@ Generate content pillars and objective distribution in strict JSON:
  */
 export function buildCalendarPrompt(plan, strategy, pillars) {
   const systemPrompt = `You are an elite Instagram growth strategist and senior creative copywriter. Output ONLY valid strict JSON without markdown formatting fences.
-Return 30 completely distinct, creative, and non-repetitive content items covering days 1 to 30.
+Return 30 completely distinct, high-impact content items covering days 1 to 30.
 
-CRITICAL CONTENT DIVERSITY & QUALITY RULES:
-1. NO BOILERPLATE OR STATIC TEMPLATES: It is strictly forbidden to use repetitive copy, fill-in-the-blank text, or placeholder day labels (NEVER write "منشور رقم X", "اليوم X من الخطة", or repeat the same body paragraph across posts).
-2. UNIQUE HOOKS PER POST: Every single day MUST start with a fresh, captivating hook in the first line of the caption tailored to the post's specific format and marketing objective (e.g. provocative question, common misconception, emotional story opener, client transformation, actionable micro-routine, or direct high-converting offer).
-3. ROTATING POST TYPES & OBJECTIVES: Follow the marketing objective distribution and pillars strictly. Distribute variety among "reel", "carousel", "static_post", and "story". Ensure consecutive days have distinct angles and visual concepts.
-4. RICH DESIGN DIRECTIVES: Each item must have custom, specific design_copy (headline, subtext, cta) and detailed director-level visual instructions in design_reference.
-5. All copy must be in high-converting, natural Arabic matching the brand tone.
+CRITICAL PAYLOAD & COMPACTNESS RULES:
+1. PUNCHY & CONCISE: To ensure fast, reliable generation without timeouts, keep each field compact, high-density, and free of filler words.
+2. CAPTION FORMAT: 2 to 4 concise, high-converting sentences in natural Arabic (Hook + Core Value/Insight + CTA) with 1-2 relevant emojis.
+3. DESIGN COPY: Headline (3-6 words), Subtext (under 12 words), Design CTA (2-4 words).
+4. DESIGN REFERENCE: 1-2 concise sentences of visual/editorial direction.
+5. DIVERSITY: Distribute post types among "reel", "carousel", "static_post", "story" according to objectives. Every day MUST have a unique hook. No placeholder day labels.
 6. post_type must be one of: "reel", "carousel", "static_post", "story".
 7. content_objective must be one of: "awareness", "education", "engagement", "trust", "social_proof", "objection_handling", "conversion".`;
 
   const tones = Array.isArray(plan.brand_tone) ? plan.brand_tone.join(", ") : (plan.brand_tone || "احترافي");
 
-  const userPrompt = `Generate a complete 30-day Instagram content calendar with high creative diversity:
-Product Name: ${plan.product_name}
+  // Compact strategy summary for lean prompt input
+  const strategySummary =
+    typeof strategy === "object" && strategy !== null
+      ? {
+          positioning: strategy.positioning,
+          audience: strategy.target_audience_analysis,
+          messaging_angles: strategy.messaging_angles,
+          cta_strategy: strategy.cta_strategy,
+        }
+      : strategy;
+
+  // Compact pillars summary
+  const pillarsSummary =
+    typeof pillars === "object" && pillars !== null
+      ? {
+          pillars: (pillars.content_pillars || []).map((p) => `${p.name} (${p.percentage}%)`),
+          distribution: pillars.objective_distribution,
+        }
+      : pillars;
+
+  const userPrompt = `Generate a compact, high-impact 30-day Instagram content calendar:
+Product: ${plan.product_name}
 Description: ${plan.product_description}
-Target Audience: ${plan.target_audience}
+Audience: ${plan.target_audience}
 Brand Tone: ${tones}
 Marketing Objective: ${plan.marketing_objective}
-Strategy Context: ${typeof strategy === "string" ? strategy : JSON.stringify(strategy)}
-Pillars & Distribution: ${typeof pillars === "string" ? pillars : JSON.stringify(pillars)}
+Strategy: ${JSON.stringify(strategySummary)}
+Pillars: ${JSON.stringify(pillarsSummary)}
 
-Return strict JSON with key "content_items" containing an array of 30 items (days 1 to 30).
-Each item schema:
+Return strict JSON with key "content_items" containing 30 items (days 1 to 30):
 {
-  "day_number": 1,
-  "caption": "نص كابشن كامل ومميز لإنستغرام يبدأ بخطاف فريد وغير مكرر، يليه محتوى تسويقي عميق وقيم، وينتهي بدعوة واضحة ومناسبة للتفاعل أو الشراء مع إيموجيز منسقة",
-  "design_copy": {
-    "headline": "عنوان رئيسي جذاب وقصير ومخصص لهذا المنشور بالذات (3-7 كلمات)",
-    "subtext": "نص مساعد يدعم الفكرة الرئيسية داخل التصميم أو السلايد",
-    "cta": "زر الإجراء المكتوب على التصميم"
-  },
-  "post_type": "reel",
-  "content_objective": "awareness",
-  "content_pillar": "اسم الركيزة المرتبطة من الخطة",
-  "design_reference": "توجيه بصري وإخراجي تفصيلي للمصمم والمونتير يوضح زوايا التصوير، الألوان، حركة العناصر، أو محتوى الشرائح في الكاروسيل",
-  "cta": "الدعوة لاتخاذ الإجراء المكتوبة في نهاية الكابشن"
+  "content_items": [
+    {
+      "day_number": 1,
+      "caption": "خطاف قوي ومركز + محتوى تسويقي عميق في 2-3 جمل + دعوة واضحة للتفاعل",
+      "design_copy": {
+        "headline": "عنوان رئيسي جذاب وقصير (3-6 كلمات)",
+        "subtext": "نص مساعد موجز جداً للتصميم",
+        "cta": "زر الإجراء"
+      },
+      "post_type": "reel",
+      "content_objective": "awareness",
+      "content_pillar": "اسم الركيزة",
+      "design_reference": "توجيه بصري وإخراجي موجز في سطرين",
+      "cta": "الدعوة للتفاعل في الكابشن"
+    }
+  ]
 }`;
 
   return { systemPrompt, userPrompt };
