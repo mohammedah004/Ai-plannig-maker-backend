@@ -39,7 +39,10 @@ const envSchema = z.object({
   // AI Service (Google Gemini)
   GEMINI_API_KEY: z
     .string()
-    .min(1, "GEMINI_API_KEY is required for strategic planning"),
+    .optional(),
+  GEMINI_API_KEYS: z
+    .string()
+    .optional(),
 
   // Google OAuth2 Configuration (Sheets & Drive Integration)
   GOOGLE_CLIENT_ID: z
@@ -53,6 +56,9 @@ const envSchema = z.object({
   GOOGLE_SHEETS_OWNER_REFRESH_TOKEN: z
     .string()
     .optional(),
+}).refine((data) => Boolean(data.GEMINI_API_KEY || data.GEMINI_API_KEYS), {
+  message: "Either GEMINI_API_KEYS or GEMINI_API_KEY is required for strategic planning",
+  path: ["GEMINI_API_KEYS"],
 });
 
 /**

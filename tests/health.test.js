@@ -1,8 +1,26 @@
 import { describe, it, expect } from "vitest";
 import request from "supertest";
 import app from "../src/app.js";
+describe("Health Check & Root Endpoint API Integration Tests", () => {
+  it("GET / returns HTTP 200 with service status", async () => {
+    const res = await request(app).get("/");
 
-describe("Health Check API Integration Tests", () => {
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "ok",
+      service: "ai-marketing-planner-backend",
+      message: "AI Marketing Planner API is running.",
+    });
+    expect(typeof res.body.uptime).toBe("number");
+    expect(typeof res.body.timestamp).toBe("string");
+  });
+
+  it("HEAD / returns HTTP 200 with empty body", async () => {
+    const res = await request(app).head("/");
+
+    expect(res.status).toBe(200);
+  });
+
   it("GET /health returns HTTP 200 with standard healthy envelope", async () => {
     const res = await request(app).get("/health");
 

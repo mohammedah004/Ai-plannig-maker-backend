@@ -25,7 +25,7 @@ app.use(
       return callback(new Error(`Origin ${origin} not allowed by CORS policy.`));
     },
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
@@ -34,15 +34,30 @@ app.use(
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 
-// 3. Mount Routes
+// 3. Root Endpoint Handlers (Uptime & Health Monitors)
+app.get("/", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    service: "ai-marketing-planner-backend",
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+    message: "AI Marketing Planner API is running.",
+  });
+});
+
+app.head("/", (req, res) => {
+  res.status(200).end();
+});
+
+// 4. Mount Routes
 app.use("/", routes);
 
-// 4. Unmatched 404 Route Handler
+// 5. Unmatched 404 Route Handler
 app.use((req, res, next) => {
   next(new NotFoundError(`المسار غير موجود: ${req.method} ${req.originalUrl}`));
 });
 
-// 5. Global Error Handling Middleware
+// 6. Global Error Handling Middleware
 app.use(errorHandler);
 
 export default app;

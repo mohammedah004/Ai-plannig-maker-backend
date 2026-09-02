@@ -56,3 +56,40 @@ describe("AI Schema Resilience Tests", () => {
     expect(parsed.design_copy.headline).toBe("");
   });
 });
+
+describe("GeminiService API Key Rotation Tests", () => {
+  it("Parses comma-separated process.env.GEMINI_API_KEYS and rotates keys round-robin", async () => {
+    const { GeminiService } = await import("../src/services/ai/gemini.service.js");
+    const service = new GeminiService("key1, key2, key3");
+
+    expect(service.getApiKeys()).toEqual(["key1", "key2", "key3"]);
+    expect(service.apiKey).toBe("key1");
+
+    expect(service.rotateKey()).toBe("key2");
+    expect(service.apiKey).toBe("key2");
+
+    expect(service.rotateKey()).toBe("key3");
+    expect(service.apiKey).toBe("key3");
+
+    expect(service.rotateKey()).toBe("key1");
+    expect(service.apiKey).toBe("key1");
+  });
+
+  it("Supports JSON array strings in GEMINI_API_KEYS", async () => {
+    const { GeminiService } = await import("../src/services/ai/gemini.service.js");
+    const service = new GeminiService('["keyA", "keyB"]');
+
+    expect(service.getApiKeys()).toEqual(["keyA", "keyB"]);
+    expect(service.apiKey).toBe("keyA");
+    expect(service.rotateKey()).toBe("keyB");
+  });
+
+  it("Falls back smoothly to single key if only one key is provided", async () => {
+    const { GeminiService } = await import("../src/services/ai/gemini.service.js");
+    const service = new GeminiService("single_key_123");
+
+    expect(service.getApiKeys()).toEqual(["single_key_123"]);
+    expect(service.apiKey).toBe("single_key_123");
+    expect(service.rotateKey()).toBe("single_key_123");
+  });
+});
