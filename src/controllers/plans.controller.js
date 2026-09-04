@@ -8,6 +8,7 @@ import { googleSheetsService } from "../services/integrations/google-sheets.serv
 import { buildRegeneratePrompt } from "../services/ai/prompts.js";
 import { singlePostRegenerationSchema } from "../services/ai/schemas.js";
 import { checkRateLimit } from "../utils/rate-limiter.js";
+import { resolveQuota, getNextUTCDayReset } from "../utils/quota-policy.js";
 import { sendSuccess, sendError } from "../utils/response.js";
 import { NotFoundError, ValidationError, RateLimitError } from "../utils/errors.js";
 import { logger } from "../utils/logger.js";
@@ -111,36 +112,11 @@ export class PlansController {
   async createPlan(req, res, next) {
     try {
       const userId = req.user.userId;
+      const userRole = req.user.role || "user";
       const planInput = req.body;
 
-      // 1. Concurrency Check: Ensure no other plan is currently generating for this user
-      const { data: activeJobs } = await supabaseAdmin
-        .from("generation_jobs")
-        .select("id, created_at, status")
-        .eq("user_id", userId)
-        .in("status", ["queued", "generating_strategy", "generating_pillars", "generating_content"])
-        .order("created_at", { ascending: false });
-
-      if (activeJobs && activeJobs.length > 0) {
-        const activeJob = activeJobs[0];
-        const jobAgeMs = Date.now() - new Date(activeJob.created_at).getTime();
-
-        // If job is younger than 5 minutes, block new generation
-        if (jobAgeMs < 5 * 60 * 1000) {
-          return sendError(
-            res,
-            "JOB_IN_PROGRESS",
-            "لديك خطة تسويقية قيد التوليد حالياً. يرجى الانتظار حتى تكتمل.",
-            409
-          );
-        } else {
-          // Auto-recover stale job (> 5 mins)
-          await supabaseAdmin
-            .from("generation_jobs")
-            .update({ status: "failed", error_message: "Stale job auto-recovered" })
-            .eq("id", activeJob.id);
-        }
-      }
+      // 1. Resolve Quota Policy for the authenticated user
+      const quotaPolicy = resolveQuota(userRole);
 
       // 2. Fetch Brand Memory from previous plan (if brand_profile_id provided)
       let previousPlanSummary = null;
@@ -166,44 +142,90 @@ export class PlansController {
         }
       }
 
-      // 3. Create marketing_plans record (status: 'generating')
-      const plan = await plansRepository.createPlan(userId, {
-        ...planInput,
-        status: "generating",
-      });
+      // 3. Atomically check concurrency lock, check daily quota, and create plan + job via Supabase RPC
+      const { data: rpcResult, error: rpcError } = await supabaseAdmin.rpc(
+        "create_plan_with_quota_check",
+        {
+          p_user_id: String(userId),
+          p_daily_limit: quotaPolicy.dailyLimit, // null = unlimited (admin)
+          p_product_name: planInput.product_name,
+          p_product_description: planInput.product_description,
+          p_product_category: planInput.product_category,
+          p_target_audience: planInput.target_audience,
+          p_problem_solved: planInput.problem_solved,
+          p_marketing_objective: planInput.marketing_objective,
+          p_brand_tone: Array.isArray(planInput.brand_tone) ? planInput.brand_tone : [],
+          p_website_url: planInput.website_url || null,
+          p_additional_context: planInput.additional_context || null,
+          p_brand_profile_id: planInput.brand_profile_id || null,
+        }
+      );
 
-      // 4. Create generation_jobs record (status: 'queued')
-      const job = await jobsRepository.createJob(plan.id, userId);
+      if (rpcError) {
+        logger.error({ err: rpcError, userId }, "[PlansController] RPC create_plan_with_quota_check failed");
+        throw new Error("تعذر إنشاء سجل الخطة في قاعدة البيانات عبر الإجراء الذري.");
+      }
 
-      // 5. Create google_sheet_exports record (status: 'pending')
-      await exportsRepository.createExport(plan.id, userId);
+      // 4. Handle RPC specific business responses
+      if (rpcResult?.error === "JOB_IN_PROGRESS") {
+        return sendError(
+          res,
+          "JOB_IN_PROGRESS",
+          "لديك خطة تسويقية قيد التوليد حالياً. يرجى الانتظار حتى تكتمل.",
+          409
+        );
+      }
+
+      if (rpcResult?.error === "QUOTA_EXCEEDED") {
+        return sendError(
+          res,
+          "QUOTA_EXCEEDED",
+          "لقد استنفدت حصتك اليومية لإنشاء الخطط (خطة واحدة يومياً). ستتجدد الحصة غداً.",
+          429,
+          {
+            used: rpcResult.used,
+            limit: rpcResult.limit,
+            resetsAt: getNextUTCDayReset(),
+          }
+        );
+      }
+
+      const planId = rpcResult?.planId;
+      const jobId = rpcResult?.jobId;
+
+      if (!planId || !jobId) {
+        throw new Error("استجابة غير صالحة من نظام إنشاء الخطة وقفل الكوتا.");
+      }
+
+      // 5. Create google_sheet_exports placeholder record (status: 'pending')
+      await exportsRepository.createExport(planId, userId);
 
       logger.info(
-        { planId: plan.id, userId, jobId: job.id, productName: planInput.product_name },
-        `[INFO] Received plan generation job: ${job.id}`
+        { planId, userId, jobId, productName: planInput.product_name, role: userRole },
+        `[INFO] Received plan generation job: ${jobId} (Role: ${userRole})`
       );
 
       // 6. Fire-and-forget background execution safely wrapped in Promise.resolve() with backstop catch
       Promise.resolve()
         .then(() =>
           orchestrator.runPlanGeneration({
-            planId: plan.id,
+            planId,
             userId,
-            jobId: job.id,
+            jobId,
             planInput,
             previousPlanSummary,
           })
         )
         .catch(async (err) => {
           logger.error(
-            { err: err.message, stack: err.stack, planId: plan.id, jobId: job.id },
+            { err: err.message, stack: err.stack, planId, jobId },
             "Unhandled error escaped plan generation orchestrator"
           );
 
           // Best-effort recovery: mark job & plan failed if orchestrator threw before catching
           try {
             await jobsRepository.updateJobStatus(
-              job.id,
+              jobId,
               "failed",
               "تعثرت عملية التوليد",
               err.message || "Unhandled server exception"
@@ -211,7 +233,7 @@ export class PlansController {
             await supabaseAdmin
               .from("marketing_plans")
               .update({ status: "failed", updated_at: new Date().toISOString() })
-              .eq("id", plan.id);
+              .eq("id", planId);
           } catch (dbErr) {
             logger.error({ dbErr: dbErr.message }, "Failed best-effort error recording in catch");
           }
@@ -221,8 +243,8 @@ export class PlansController {
       return sendSuccess(
         res,
         {
-          planId: plan.id,
-          jobId: job.id,
+          planId,
+          jobId,
         },
         201,
         "تم بدء توليد الخطة التسويقية بنجاح."
@@ -234,7 +256,14 @@ export class PlansController {
 
   /**
    * POST /api/v1/plans/:id/retry
-   * Retries plan generation for a failed plan, creating a fresh job record
+   * Retries plan generation for a failed plan, creating a fresh job record.
+   *
+   * ARCHITECTURAL DECISION / EDGE CASE:
+   * A plan that failed on day T and is retried successfully on day T+1 retains its original `created_at`
+   * timestamp (day T). Under the daily quota calculation (counting `marketing_plans` where `status = 'completed'`
+   * and `created_at >= today_start_utc`), this retried plan does NOT consume day T+1's quota.
+   * This is an intentional MVP design decision: the user requested the plan on day T, suffered a technical failure,
+   * and is rightfully redeeming their day T quota without being penalized on day T+1.
    */
   async retryPlan(req, res, next) {
     try {
@@ -584,6 +613,59 @@ export class PlansController {
         200,
         `تمت إعادة صياغة منشور اليوم ${dayNumber} بنجاح!`
       );
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /**
+   * GET /api/v1/plans/quota
+   * Retrieves current daily generation quota and role details for the authenticated user
+   */
+  async getQuotaStatus(req, res, next) {
+    try {
+      const userId = req.user.userId;
+      const userRole = req.user.role || "user";
+      const policy = resolveQuota(userRole);
+
+      // Admin has unlimited quota
+      if (policy.dailyLimit === null) {
+        return sendSuccess(res, {
+          role: userRole,
+          dailyLimit: null,
+          used: 0,
+          remaining: null,
+          resetsAt: null,
+          isUnlimited: true,
+        });
+      }
+
+      // Count plans completed today in UTC
+      const now = new Date();
+      const todayStartUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+
+      const { count, error } = await supabaseAdmin
+        .from("marketing_plans")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", userId)
+        .eq("status", "completed")
+        .gte("created_at", todayStartUTC);
+
+      if (error) {
+        throw new Error("تعذر استعلام رصيد الكوتا من قاعدة البيانات.");
+      }
+
+      const used = count || 0;
+      const remaining = Math.max(0, policy.dailyLimit - used);
+
+      return sendSuccess(res, {
+        role: userRole,
+        dailyLimit: policy.dailyLimit,
+        used,
+        remaining,
+        resetsAt: getNextUTCDayReset(),
+        isUnlimited: false,
+      });
     } catch (err) {
       next(err);
     }

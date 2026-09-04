@@ -9,7 +9,8 @@ const router = Router();
 // All plan routes require authentication
 router.use(authenticate);
 
-// 1. List plans & Create plan
+// 1. List plans & Create plan & Quota info
+router.get("/quota", (req, res, next) => plansController.getQuotaStatus(req, res, next));
 router.get("/", (req, res, next) => plansController.getPlans(req, res, next));
 router.post("/", validate(createPlanSchema), (req, res, next) => plansController.createPlan(req, res, next));
 

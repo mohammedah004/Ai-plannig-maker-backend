@@ -1,4 +1,5 @@
 import { verifyAuthToken } from "../utils/jwt.js";
+import { supabaseAdmin } from "../config/supabase.js";
 import { UnauthorizedError } from "../utils/errors.js";
 import { logger } from "../utils/logger.js";
 
@@ -26,10 +27,30 @@ export async function authenticate(req, res, next) {
     try {
       const userPayload = await verifyAuthToken(token);
 
+      // Resolve role from profiles table (server-side source of truth)
+      let userRole = "user";
+      try {
+        const { data: profile } = await supabaseAdmin
+          .from("profiles")
+          .select("role")
+          .eq("auth_user_id", userPayload.userId)
+          .maybeSingle();
+
+        if (profile?.role) {
+          userRole = profile.role;
+        }
+      } catch (roleErr) {
+        logger.warn(
+          { userId: userPayload.userId, err: roleErr.message },
+          "[Auth] Failed to query profiles.role, falling back to 'user'"
+        );
+      }
+
       req.user = {
         userId: userPayload.userId,
         email: userPayload.email,
         name: userPayload.name,
+        role: userRole,
         tokenType: userPayload.tokenType || "internal",
       };
 
