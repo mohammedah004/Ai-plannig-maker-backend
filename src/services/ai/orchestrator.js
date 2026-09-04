@@ -186,6 +186,8 @@ export class AIOrchestrator {
           spreadsheetId: exportResult.spreadsheetId,
           spreadsheetUrl: exportResult.spreadsheetUrl,
           errorMessage: exportResult.isShared ? null : exportResult.errorMessage,
+          targetVersion: 1,
+          exportedVersion: 1,
         });
 
         await jobsRepository.updateJobStatus(

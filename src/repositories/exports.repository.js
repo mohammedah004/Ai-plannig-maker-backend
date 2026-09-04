@@ -65,9 +65,21 @@ export class ExportsRepository {
    * @param {string} [details.spreadsheetId] - Google Spreadsheet ID
    * @param {string} [details.spreadsheetUrl] - Direct web URL
    * @param {string|null} [details.errorMessage] - Error details if any
+   * @param {number} [details.targetVersion] - Target plan content version
+   * @param {number} [details.exportedVersion] - Successfully exported plan content version
    * @returns {Promise<Object>}
    */
-  async updateExportStatus(planId, status, { spreadsheetId = null, spreadsheetUrl = null, errorMessage = null } = {}) {
+  async updateExportStatus(
+    planId,
+    status,
+    {
+      spreadsheetId = null,
+      spreadsheetUrl = null,
+      errorMessage = null,
+      targetVersion = undefined,
+      exportedVersion = undefined,
+    } = {}
+  ) {
     const payload = {
       status,
       updated_at: new Date().toISOString(),
@@ -76,6 +88,8 @@ export class ExportsRepository {
     if (spreadsheetId !== null) payload.spreadsheet_id = spreadsheetId;
     if (spreadsheetUrl !== null) payload.spreadsheet_url = spreadsheetUrl;
     if (errorMessage !== undefined) payload.error_message = errorMessage;
+    if (targetVersion !== undefined) payload.target_version = targetVersion;
+    if (exportedVersion !== undefined) payload.exported_version = exportedVersion;
 
     const { data, error } = await supabaseAdmin
       .from("google_sheet_exports")
